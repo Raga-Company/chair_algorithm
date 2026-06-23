@@ -3,24 +3,18 @@ from retrieval.reranker import ContextAwareReranker
 
 
 class HybridRetriever:
+
     def __init__(self, bm25, semantic):
-        """
-        ترکیب نتایج BM25 و Semantic با روش RRF + Reranker
-        """
+
         self.bm25 = bm25
         self.semantic = semantic
-
-        # 🔥 اضافه شدن reranker
         self.reranker = ContextAwareReranker()
 
-    def search(self, query, k=5, initial_k=20, rrf_constant=1):
-        """
-        جستجوی ترکیبی + reranking
-        """
+    # =========================
+    # RRF + Reranker
+    # =========================
+    def search(self, query, k=5, initial_k=20):
 
-        # =========================
-        # 1. گرفتن نتایج اولیه
-        # =========================
         bm25_results = self.bm25.search(query, k=initial_k)
         semantic_results = self.semantic.search(query, k=initial_k)
 
@@ -29,41 +23,26 @@ class HybridRetriever:
 
         scores = {}
 
-        # ---------- BM25 ----------
         for rank, item in enumerate(bm25_results):
-            idx = item["index"]
+            idx = item.get("index")
+            if idx is None:
+                continue
+            scores[idx] = scores.get(idx, 0) + BM25_WEIGHT * (1.0 / (rank + 60))
 
-            rrf_score = 1.0 / (rank + 60)   # smoothing
-            scores[idx] = scores.get(idx, 0) + BM25_WEIGHT * rrf_score
-
-        # ---------- SEMANTIC ----------
         for rank, item in enumerate(semantic_results):
-            idx = item["index"]
+            idx = item.get("index")
+            if idx is None:
+                continue
+            scores[idx] = scores.get(idx, 0) + SEM_WEIGHT * (1.0 / (rank + 60))
 
-            rrf_score = 1.0 / (rank + 60)
-            scores[idx] = scores.get(idx, 0) + SEM_WEIGHT * rrf_score
+        for idx in list(scores.keys()):
 
-        # ---------- OVERLAP BOOST ----------
+            in_bm25 = any(r.get("index") == idx for r in bm25_results)
+            in_sem = any(r.get("index") == idx for r in semantic_results)
 
-        for idx in scores:
+            if in_bm25 and in_sem:
+                scores[idx] *= 1.25
 
-            in_bm25 = any(
-                r["index"] == idx 
-                for r in bm25_results
-            )
-
-            in_semantic = any(
-                r["index"] == idx 
-                for r in semantic_results
-            )
-
-
-            if in_bm25 and in_semantic:
-                scores[idx] *= 1.3
-
-        # =========================
-        # 3. ساخت CANDIDATES
-        # =========================
         sorted_indices = sorted(
             scores.keys(),
             key=lambda x: scores[x],
@@ -73,6 +52,7 @@ class HybridRetriever:
         candidates = []
 
         for idx in sorted_indices:
+
             item = self.bm25.dataset[idx]
 
             candidates.append({
@@ -83,9 +63,6 @@ class HybridRetriever:
                 "fusion_score": scores[idx]
             })
 
-        # =========================
-        # 4. RERANKING (مرحله هوشمند)
-        # =========================
         reranked_results = []
 
         for item in candidates:
@@ -94,13 +71,10 @@ class HybridRetriever:
 
             score = self.reranker.score(query, doc_text)
 
-            item["rerank_score"] = score
+            item["rerank_score"] = float(score)
 
             reranked_results.append(item)
 
-        # =========================
-        # 5. مرتب‌سازی نهایی
-        # =========================
         reranked_results.sort(
             key=lambda x: x["rerank_score"],
             reverse=True
@@ -108,69 +82,78 @@ class HybridRetriever:
 
         return reranked_results[:k]
 
+    # =========================
+    # Weighted Fusion
+    # =========================
     def search_with_weights(self, query, k=5, alpha=0.5):
-        """
-        روش قبلی (بدون reranker) - دست نخورده
-        """
 
         bm25_results = self.bm25.search(query, k=20)
         semantic_results = self.semantic.search(query, k=20)
 
-        bm25_scores = np.array([r["score"] for r in bm25_results])
+        bm25_scores = np.array([r.get("score", 0) for r in bm25_results])
+        semantic_scores = np.array([r.get("score", 0) for r in semantic_results])
+
+        if len(bm25_scores) == 0:
+            bm25_scores = np.array([0.0])
+
+        if len(semantic_scores) == 0:
+            semantic_scores = np.array([0.0])
 
         if bm25_scores.max() != bm25_scores.min():
-            bm25_norm = (bm25_scores - bm25_scores.min()) / (
-                bm25_scores.max() - bm25_scores.min()
-            )
+            bm25_norm = (bm25_scores - bm25_scores.min()) / (bm25_scores.max() - bm25_scores.min())
         else:
             bm25_norm = np.full_like(bm25_scores, 0.5)
 
-        semantic_distances = np.array([r["distance"] for r in semantic_results])
-        semantic_scores = -semantic_distances
-
         if semantic_scores.max() != semantic_scores.min():
-            semantic_norm = (semantic_scores - semantic_scores.min()) / (
-                semantic_scores.max() - semantic_scores.min()
-            )
+            semantic_norm = (semantic_scores - semantic_scores.min()) / (semantic_scores.max() - semantic_scores.min())
         else:
             semantic_norm = np.full_like(semantic_scores, 0.5)
 
         combined = {}
 
         for item, score in zip(bm25_results, bm25_norm):
-            idx = item["index"]
+
+            idx = item.get("index")
+            if idx is None:
+                continue
+
             combined[idx] = {
                 "item": item,
-                "bm25_score": score,
-                "semantic_score": 0
+                "bm25_score": float(score),
+                "semantic_score": 0.0
             }
 
         for item, score in zip(semantic_results, semantic_norm):
-            idx = item["index"]
+
+            idx = item.get("index")
+            if idx is None:
+                continue
+
             if idx in combined:
-                combined[idx]["semantic_score"] = score
+                combined[idx]["semantic_score"] = float(score)
             else:
                 combined[idx] = {
                     "item": item,
-                    "bm25_score": 0,
-                    "semantic_score": score
+                    "bm25_score": 0.0,
+                    "semantic_score": float(score)
                 }
 
         final_results = []
 
         for idx, data in combined.items():
+
             final_score = alpha * data["bm25_score"] + (1 - alpha) * data["semantic_score"]
 
             item = data["item"]
 
             final_results.append({
+                "index": idx,
                 "question": item.get("question", ""),
                 "answer": item.get("answer", ""),
                 "category": item.get("category", ""),
-                "final_score": final_score,
-                "bm25_score": data["bm25_score"],
-                "semantic_score": data["semantic_score"],
-                "index": idx
+                "final_score": float(final_score),
+                "bm25_score": float(data["bm25_score"]),
+                "semantic_score": float(data["semantic_score"])
             })
 
         final_results.sort(key=lambda x: x["final_score"], reverse=True)
