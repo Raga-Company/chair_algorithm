@@ -54,7 +54,7 @@ hybrid = HybridRetriever(bm25, semantic)
 print(f"\nInitialization time: {time.time() - start_time:.2f} seconds")
 
 # کوئری تست
-query = "تعیین جنسیت"
+query = "پریودی"
 print(f"\nQuery: {query}")
 print("=" * 50)
 

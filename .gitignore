@@ -1,12 +1,9 @@
-# ویرایش .gitignore
+`# فایل فعلی رو پشتیبان بگیرید
+mv .gitignore .gitignore.backup
+
+# یک .gitignore جدید با محتوای درست بسازید
 cat > .gitignore << 'EOF'
-# Python virtual environment
-lib/
-lib64/
-bin/
-include/
-share/
-pyvenv.cfg
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -17,6 +14,16 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+*.log
 
 # IDE
 .vscode/
@@ -32,16 +39,4 @@ Thumbs.db
 temp/
 cache/
 *.tmp
-*.log
-
-# Python package info
-*.egg-info/
-*.egg
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.mypy_cache/
-.dmypy.json
-dmypy.json
 EOF
