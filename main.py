@@ -118,7 +118,7 @@ def main():
         semantic = SemanticRetriever(
             data,
             cache_dir="cache/semantic",
-            model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+            model_name="HooshvareLab/bert-fa-base-uncased",
             index_type=args.index_type
         )
 

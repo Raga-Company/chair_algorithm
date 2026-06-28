@@ -22,22 +22,22 @@ class ContextAwareReranker:
         
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Use a lighter, multilingual model for reranking
-        model_name = "sentence-transformers/all-MiniLM-L6-v2"  # Faster and good for reranking
+        # استفاده از مدل فارسی برای Reranker
+        model_name = "HooshvareLab/bert-fa-base-uncased"  # ← مدل فارسی
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.model = AutoModel.from_pretrained(model_name)
             self.model.to(self.device)
             self.model.eval()
+            logger.info(f"✅ Reranker model loaded: {model_name} on {self.device}")
         except Exception as e:
             raise ModelError(f"Failed to load reranker model: {e}")
         
-        # Cache document embeddings
         dataset_hash = self._hash_dataset()
         self.doc_emb_file = os.path.join(cache_dir, f"doc_emb_{dataset_hash}.npy")
         self.doc_emb_meta_file = os.path.join(cache_dir, f"doc_emb_meta_{dataset_hash}.pkl")
         self.doc_emb = self._load_or_build_embeddings()
-        logger.info(f"Reranker ready with {len(self.doc_emb)} embeddings on {self.device}")
+        logger.info(f"✅ Reranker ready with {len(self.doc_emb)} embeddings on {self.device}")
     
     def _hash_dataset(self):
         content = str([(item.get("question",""), item.get("answer","")) for item in self.dataset])
@@ -45,7 +45,6 @@ class ContextAwareReranker:
     
     @log_execution_time
     def _load_or_build_embeddings(self):
-        """Load document embeddings from cache or build them"""
         if os.path.exists(self.doc_emb_file) and os.path.exists(self.doc_emb_meta_file):
             try:
                 if self.use_mmap:
@@ -62,9 +61,9 @@ class ContextAwareReranker:
             except Exception as e:
                 logger.warning(f"Failed to load embeddings cache: {e}")
         
-        logger.info("Building document embeddings for reranker...")
+        logger.info("Building document embeddings for reranker (Persian model)...")
         embeddings = []
-        batch_size = get_optimal_batch_size(base_size=64, min_size=16)
+        batch_size = get_optimal_batch_size(base_size=32, min_size=8)
         
         for batch in chunk_list(self.dataset, batch_size):
             batch_texts = []
@@ -72,7 +71,8 @@ class ContextAwareReranker:
                 doc = clean_text(
                     str(item.get("question", "")) + " " +
                     str(item.get("answer", "")) + " " +
-                    str(item.get("category", ""))
+                    str(item.get("category", "")) + " " +
+                    str(item.get("specialty", ""))
                 )
                 batch_texts.append(doc)
             
@@ -84,7 +84,6 @@ class ContextAwareReranker:
         
         embeddings = np.vstack(embeddings) if embeddings else np.array([])
         
-        # Save to cache
         np.save(self.doc_emb_file, embeddings)
         with open(self.doc_emb_meta_file, "wb") as f:
             pickle.dump({"dataset_size": len(self.dataset)}, f)
@@ -93,7 +92,6 @@ class ContextAwareReranker:
         return embeddings
     
     def _encode_batch(self, texts: List[str]) -> np.ndarray:
-        """Encode a batch of texts to embeddings"""
         inputs = self.tokenizer(
             texts,
             return_tensors="pt",
@@ -105,13 +103,12 @@ class ContextAwareReranker:
         
         with torch.no_grad():
             outputs = self.model(**inputs)
-            embeddings = outputs.last_hidden_state[:, 0, :]  # [CLS] token
+            embeddings = outputs.last_hidden_state[:, 0, :]
             embeddings = F.normalize(embeddings, p=2, dim=1)
         
         return embeddings.cpu().numpy()
     
     def encode(self, text: str) -> torch.Tensor:
-        """Encode a single text"""
         inputs = self.tokenizer(
             text,
             return_tensors="pt",
@@ -130,8 +127,7 @@ class ContextAwareReranker:
     
     @handle_errors
     @log_execution_time
-    def rerank(self, query: str, candidates: List[Dict[str, Any]], batch_size: int = 32) -> List[Dict[str, Any]]:
-        """Rerank candidates using cross-encoder style similarity"""
+    def rerank(self, query: str, candidates: List[Dict[str, Any]], batch_size: int = 16) -> List[Dict[str, Any]]:
         if not candidates:
             return candidates
         
@@ -141,13 +137,11 @@ class ContextAwareReranker:
         for batch in chunk_list(candidates, batch_size):
             batch_indices = [item["index"] for item in batch]
             
-            # Get document embeddings
             doc_embs = torch.tensor(
                 np.vstack([self.doc_emb[idx] for idx in batch_indices]),
                 device=self.device
             )
             
-            # Compute similarities
             similarities = F.cosine_similarity(query_emb, doc_embs)
             
             for item, sim in zip(batch, similarities):
